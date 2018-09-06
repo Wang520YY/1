@@ -1,0 +1,277 @@
+# -*- coding: utf-8 -*-
+#如果模块还没加载客户端会执行import和from语句去搜索，编译执行模块文件程序，import会读取整个模块，所以必须进行定义后才能读取它的变量名，form将获取模块特定的变量名
+#from语句有破坏命名空间的潜质。如果使用from导入变量，而那些变量碰巧和作用域中现有变量重名，变量就会被悄悄的覆盖掉
+from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time
+import redis
+#使用配置文件生效，配置文件的格式和windows的INI文件的格式相同
+#该模块的作用 就是使用模块中的RawConfigParser()、ConfigParser()、 SafeConfigParser()这三个方法（三者择其一），创建一个对象使用对象的方法对指定的配置文件做增删改查 操作
+import ConfigParser
+import sys
+import json
+import requests
+import hashlib
+#提供了非常丰富的方法用来处理文件和目录
+import os
+import base64
+#psutil是一个跨平台库能够轻松实现获取系统运行的进程和系统利用率
+import psutil as pt
+import signal
+
+headless = True
+debug = True
+
+
+def get_pid_by_name(name):
+    pids = pt.process_iter()
+    pid_list = []
+    for pid in pids:
+        try:
+            if pid.name() == name:
+                pid_list.append(pid.pid)
+        except pt.NoSuchProcess:
+            continue
+    return pid_list
+
+
+def send_callback_req(callback_url, image_path, resource_id):
+    f = open(image_path, 'rb')
+    data = base64.b64encode(f.read())
+    payload = {'resourceId': resource_id}
+    f.close()
+    r = requests.post(callback_url, data, params=payload, headers={'Content-Type': 'application/octet-stream'})
+
+    return r.json()
+
+
+def browser_task_by_wait(url, width=800, height=674, wait=5):
+    options = Options()
+
+    # 设置headless模式
+    if headless is True:
+        options.add_argument("--headless")
+
+    image_name = hashlib.md5(url + str(time.time())).hexdigest() + '.png'
+    image_path = './static/' + image_name
+
+    firefox_profile = webdriver.FirefoxProfile()
+    firefox_profile.set_preference('dom.ipc.plugins.enabled.libflashplayer.so', 'true')
+    firefox_profile.set_preference("plugin.state.flash", 2)
+
+    browser = webdriver.Firefox(firefox_profile=firefox_profile,
+                                firefox_options=options,
+                                executable_path='/usr/local/bin/geckodriver')
+
+    browser.set_window_size(width, height)
+    browser.get(url)  # 打开url
+    time.sleep(wait)
+    time.sleep(1)
+
+    browser.save_screenshot(image_path)
+    time.sleep(0.1)
+
+    print "%s^screenshot by wait,url:%s" % (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), url)
+
+    browser.close()
+
+    return image_path
+
+
+def browser_task_by_detect(url, width=800, height=674, wait=5, by='ID', ele=''):
+    options = Options()
+
+    # 设置headless模式
+    if headless is True:
+        options.add_argument("--headless")
+
+    image_name = hashlib.md5(url + str(time.time())).hexdigest() + '.png'
+    image_path = './static/' + image_name
+
+    firefox_profile = webdriver.FirefoxProfile()
+    firefox_profile.set_preference('dom.ipc.plugins.enabled.libflashplayer.so', 'true')
+    firefox_profile.set_preference("plugin.state.flash", 2)
+
+    browser = webdriver.Firefox(firefox_profile=firefox_profile,
+                                firefox_options=options,
+                                executable_path='/usr/local/bin/geckodriver')
+
+    browser.set_window_size(width, height)
+    browser.get(url)  # 打开url
+    time.sleep(wait)
+    time.sleep(1)
+
+    # 元素名称
+    if by.lower() == 'id':
+        element = '#' + ele
+    elif by.lower() == 'class':
+        element = '.' + ele
+
+    print "%s^screenshot by detect,url:%s" % (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), url)
+
+    try:
+        WebDriverWait(browser, wait).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, element))
+        )
+
+        print "%s^detect element success,url:%s" % (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), url)
+
+        time.sleep(4)
+        browser.save_screenshot(image_path)
+    except Exception, e:
+        time.sleep(1)
+        browser.save_screenshot(image_path)
+        print "%s^error,ele not detected,still do screenshot, info:%s" % (
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), e)
+
+    browser.close()
+
+    return image_path
+
+
+def load_conf():
+    cp = ConfigParser.SafeConfigParser()
+    cp.read('./conf.ini')
+    return cp
+
+
+def load_redis():
+    cp = load_conf()
+    r_host = cp.get('redis', 'host')
+    r_port = cp.get('redis', 'port')
+    r_db = cp.get('redis', 'db')
+
+    return redis.Redis(host=r_host, port=r_port, db=r_db, decode_responses=True)
+
+
+def is_ps_num_exceed():
+    cp = load_conf()
+    max_ps_num = int(cp.get('ps', 'max_num'))
+    pid_list = get_pid_by_name('firefox')
+    cur_pid_list_len = len(pid_list)
+    print '%s^pid list len:%d' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), cur_pid_list_len)
+    if cur_pid_list_len >= max_ps_num:
+        return True
+
+    return False
+
+
+def kill_long_time_ps():
+    cp = load_conf()
+    max_time = int(cp.get('ps', 'max_time'))
+
+    def kill_ps(ps_list):
+        for x in ps_list:
+            try:
+                p = pt.Process(x)
+                uptime = time.time() - p.create_time()
+                print '%s^process %d uptime %d s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), x, uptime)
+                if uptime > max_time:
+                    print "%s^killing pid %d" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), x)
+                    os.kill(x, signal.SIGKILL)
+            except pt.NoSuchProcess:
+                continue
+
+    ff_pid_list = get_pid_by_name('firefox')
+    gec_pid_list = get_pid_by_name('geckodriver')
+
+    kill_ps(ff_pid_list)
+    kill_ps(gec_pid_list)
+
+    return
+
+
+def handle_task():
+    # kill 长时间运行进程
+    kill_long_time_ps()
+
+    time.sleep(0.1)
+
+    r = load_redis()
+
+    list_len = r.llen('screenshotTaskList')
+
+    if list_len == 0:
+        print '%s^empty screenshot task' % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        return
+
+    if list_len > 10:
+        list_len = 10
+
+    for i in range(0, list_len):
+
+        # 处理进程数问题
+        is_exceed = is_ps_num_exceed()
+        if is_exceed:
+            # 进程数过多
+            print '%s^ps exceed max num...' % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            return
+
+        task_info = r.rpop('screenshotTaskList')
+
+        if task_info is None:
+            return
+
+        print "%s^task detail info:%s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), task_info)
+        task = json.loads(task_info)
+
+        if task['retry'] >= 1:
+            print "%s^retry screenshot,times:%s,%s" % (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), task['retry'], task['url'])
+        # 3次重试放弃
+        if task['retry'] >= 4:
+            print "%s^retry screenshot fail,giveup,times:%s,%s" % (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), task['retry'], task['url'])
+            continue
+
+        try:
+            if 'method' in task.keys() and task['method'] == 'detect':
+                image_path = browser_task_by_detect(task['url'], int(task['width']), int(task['height']),
+                                                    int(task['wait']), task['by'], task['ele'])
+            else:
+                image_path = browser_task_by_wait(task['url'], int(task['width']), int(task['height']),
+                                                  int(task['wait']))
+
+            call_back_url = task['callbackUrl']  # 回调url
+            retry = 3
+            res = send_callback_req(call_back_url, image_path, task['resourceId'])
+
+            # 回调重试
+            while res['status'] != 100 and retry > 0:
+                retry = retry - 1
+                time.sleep(1)
+                res = send_callback_req(call_back_url, image_path, task['resourceId'])
+                print '%s^callback error,data:%s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), task['url'])
+
+            if res['status'] == 100:
+                print '%s,success,url: %s' % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), task['url'])
+
+            # del image
+            if debug is False:
+                os.remove(image_path)
+
+        except Exception, e:
+            task["retry"] += 1
+            res = r.lpush('screenshotTaskList', json.dumps(task))
+            if res <= 0:
+                print '%s^redis error,data:%s' % (
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), json.dumps(task))
+
+            print "%s^error info:%s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()), e)
+        else:
+            if os.access(image_path, os.F_OK) and debug is False:
+                os.remove(image_path)
+
+    return
+
+
+if __name__ == '__main__':
+    handle_task()
+    sys.exit(0)
+
